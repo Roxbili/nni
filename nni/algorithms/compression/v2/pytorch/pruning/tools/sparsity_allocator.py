@@ -41,11 +41,79 @@ class NormalSparsityAllocator(SparsityAllocator):
         return masks
 
 
+class BlockSparsityAllocator(SparsityAllocator):
+    """
+    This allocator simply pruned the block weight with smaller metrics in layer level.
+    """
+    def generate_sparsity(self, metrics: Dict[str, Tensor]) -> Dict[str, Dict[str, Tensor]]:
+        masks = {}
+        for name, wrapper in self.pruner.get_modules_wrapper().items():
+            # wrapper拿到的其实就是config_list
+            sparsity_rate = wrapper.config['total_sparsity']    # total sparsity 应该是由scheduler根据 config 里的 sparsity 慢慢往上涨
+
+            assert name in metrics, 'Metric of {} is not calculated.'.format(name)
+
+            # We assume the metric value are all positive right now.
+            metric = metrics[name]
+            if self.continuous_mask:
+                metric *= self._compress_mask(wrapper.weight_mask)
+            prune_num = int(sparsity_rate * metric.numel())
+            if prune_num == 0:
+                threshold = metric.min() - 1
+            else:
+                threshold = torch.topk(metric.view(-1), prune_num, largest=False)[0].max()
+            mask = torch.gt(metric, threshold).type_as(metric)
+            masks[name] = self._expand_mask(name, mask)
+            if self.continuous_mask:
+                masks[name]['weight'] *= wrapper.weight_mask
+        return masks
+
+    def _compress_mask(self, mask: Tensor) -> Tensor:
+        """
+        This function will reduce the mask with `self.dim` and `self.block_sparse_size`.
+        e.g., a mask tensor with size [50, 60, 70], self.dim is (0, 1), self.block_sparse_size is [10, 10].
+        Then, the reduced mask size is [50 / 10, 60 / 10] => [5, 6].
+
+        Parameters
+        ----------
+        name
+            The masked module name.
+        mask
+            The entire mask has the same size with weight.
+
+        Returns
+        -------
+        Tensor
+            Reduced mask.
+        """
+        if self.dim is None or len(mask.size()) == 1 or len(self.dim) == len(mask.size()):
+            mask = mask.clone()
+        else:
+            mask_dim = list(range(len(mask.size())))
+            for dim in self.dim:
+                mask_dim.remove(dim)
+            mask = torch.sum(mask, dim=mask_dim)
+
+        if self.block_sparse_size is not None:
+            # operation like pooling
+            lower_case_letters = 'abcdefghijklmnopqrstuvwxyz'
+            ein_expression = ''
+            for i, step in enumerate(self.block_sparse_size):
+                mask = mask.unfold(i, step, step)
+                ein_expression += lower_case_letters[i]
+            ein_expression = '...{},{}'.format(ein_expression, ein_expression)
+            mask = torch.einsum(ein_expression, mask, torch.ones(self.block_sparse_size).to(mask.device))
+
+        return (mask != 0).type_as(mask)
+
+
 class GlobalSparsityAllocator(SparsityAllocator):
     """
     This allocator pruned the weight with smaller metrics in group level.
     This means all layers in a group will sort metrics uniformly.
     The layers with the same config in config_list is a group.
+
+    group contains all layers parameters, threhold is calculated by group
     """
     def generate_sparsity(self, metrics: Dict) -> Dict[str, Dict[str, Tensor]]:
         masks = {}

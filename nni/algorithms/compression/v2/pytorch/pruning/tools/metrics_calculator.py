@@ -4,12 +4,14 @@
 from typing import Dict, List, Optional, Union
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from .base import MetricsCalculator
 
 __all__ = ['NormMetricsCalculator', 'MultiDataNormMetricsCalculator', 'DistMetricsCalculator',
-           'APoZRankMetricsCalculator', 'MeanRankMetricsCalculator', 'StraightMetricsCalculator']
+           'APoZRankMetricsCalculator', 'MeanRankMetricsCalculator', 'StraightMetricsCalculator',
+           'BlockMetricsCaculator']
 
 
 class StraightMetricsCalculator(MetricsCalculator):
@@ -70,6 +72,72 @@ class NormMetricsCalculator(MetricsCalculator):
                 metrics[name] = tensor.abs()
             else:
                 metrics[name] = tensor.norm(p=self.p, dim=across_dim)
+        return metrics
+
+
+class BlockMetricsCaculator(MetricsCalculator):
+    """
+    Calculate the specify norm for each tensor in data.
+    L1, L2, Level, Slim pruner use this to calculate metric.
+    """
+
+    def __init__(self, dim: Optional[Union[int, List[int]]] = None, p: Optional[Union[int, float]] = None,
+                 block_sparse_size: Optional[Union[int, List[int]]] = None):
+        """
+        Parameters
+        ----------
+        dim
+            The dimensions that corresponding to the under pruning weight dimensions in collected data.
+            None means one-to-one correspondence between pruned dimensions and data, which equal to set `dim` as all data dimensions.
+            Only these `dim` will be kept and other dimensions of the data will be reduced.
+
+            Example:
+
+            If you want to prune the Conv2d weight in filter level, and the weight size is (32, 16, 3, 3) [out-channel, in-channel, kernal-size-1, kernal-size-2].
+            Then the under pruning dimensions is [0], which means you want to prune the filter or out-channel.
+
+                Case 1: Directly collect the conv module weight as data to calculate the metric.
+                Then the data has size (32, 16, 3, 3).
+                Mention that the dimension 0 of the data is corresponding to the under pruning weight dimension 0.
+                So in this case, `dim=0` will set in `__init__`.
+
+                Case 2: Use the output of the conv module as data to calculate the metric.
+                Then the data has size (batch_num, 32, feature_map_size_1, feature_map_size_2).
+                Mention that the dimension 1 of the data is corresponding to the under pruning weight dimension 0.
+                So in this case, `dim=1` will set in `__init__`.
+
+            In both of these two case, the metric of this module has size (32,).
+        block_sparse_size
+            This used to describe the block size a metric value represented. By default, None means the block size is ones(len(dim)).
+            Make sure len(dim) == len(block_sparse_size), and the block_sparse_size dimension position is corresponding to dim.
+
+            Example:
+
+            The under pruning weight size is (768, 768), and you want to apply a block sparse on dim=[0] with block size [64, 768],
+            then you can set block_sparse_size=[64]. The final metric size is (12,).
+        p
+            The order of norm. None means Frobenius norm.
+        """
+        super().__init__(dim=dim, block_sparse_size=block_sparse_size)
+        self.p = p if p is not None else 'fro'
+
+    def calculate_metrics(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        metrics = {}
+        for name, tensor in data.items():
+            keeped_dim = list(range(len(tensor.size()))) if self.dim is None else self.dim
+            across_dim = list(range(len(tensor.size())))
+            [across_dim.pop(i) for i in reversed(keeped_dim)]
+            if len(across_dim) == 0:
+                metrics[name] = tensor.abs()
+            else:
+                metrics[name] = tensor.norm(p=self.p, dim=across_dim)
+
+            # avg_pool in each metric block
+            if self.block_sparse_size is not None:
+                # print(tensor.size(), self.dim, metrics[name].shape)
+                metrics[name].unsqueeze(0)
+                metrics[name] = F.avg_pool2d(metrics[name].unsqueeze(0), kernel_size=self.block_sparse_size,
+                                            ceil_mode=True, count_include_pad=False).squeeze(0)
         return metrics
 
 

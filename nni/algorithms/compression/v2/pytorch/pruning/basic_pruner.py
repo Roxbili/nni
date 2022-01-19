@@ -1,9 +1,10 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import sys
 from copy import deepcopy
 import logging
-from typing import List, Dict, Tuple, Callable, Optional
+from typing import List, Dict, Tuple, Callable, Optional, Union
 
 from schema import And, Or, Optional as SchemaOptional, SchemaError
 import torch
@@ -30,20 +31,23 @@ from .tools import (
     MultiDataNormMetricsCalculator,
     DistMetricsCalculator,
     APoZRankMetricsCalculator,
-    MeanRankMetricsCalculator
+    MeanRankMetricsCalculator,
+    BlockMetricsCaculator
 )
 
 from .tools import (
     SparsityAllocator,
     NormalSparsityAllocator,
     GlobalSparsityAllocator,
-    Conv2dDependencyAwareAllocator
+    Conv2dDependencyAwareAllocator,
+    BlockSparsityAllocator
 )
 
 _logger = logging.getLogger(__name__)
+# _logger.setLevel(logging.DEBUG)
 
 __all__ = ['LevelPruner', 'L1NormPruner', 'L2NormPruner', 'FPGMPruner', 'SlimPruner', 'ActivationPruner',
-           'ActivationAPoZRankPruner', 'ActivationMeanRankPruner', 'TaylorFOWeightPruner', 'ADMMPruner']
+           'ActivationAPoZRankPruner', 'ActivationMeanRankPruner', 'TaylorFOWeightPruner', 'ADMMPruner', 'BlockPruner']
 
 NORMAL_SCHEMA = {
     Or('sparsity', 'sparsity_per_layer'): And(float, lambda n: 0 <= n < 1),
@@ -150,6 +154,62 @@ class LevelPruner(BasicPruner):
     def reset_tools(self):
         if self.data_collector is None:
             self.data_collector = WeightDataCollector(self)
+        else:
+            self.data_collector.reset()
+        if self.metrics_calculator is None:
+            self.metrics_calculator = NormMetricsCalculator()
+        if self.sparsity_allocator is None:
+            self.sparsity_allocator = NormalSparsityAllocator(self)
+
+
+class BlockPruner(BasicPruner):
+    """
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Model to be pruned
+    config_list : List[Dict]
+        Supported keys:
+            - sparsity : This is to specify the sparsity for each layer in this config to be compressed.
+            - sparsity_per_layer : Equals to sparsity.
+            - op_types : Operation types to be pruned.
+            - op_names : Operation names to be pruned.
+            - op_partial_names: Operation partial names to be pruned, will be autocompleted by NNI.
+            - exclude : Set True then the layers setting by op_types and op_names will be excluded from pruning.
+    dim : Optional[Union[int, List[int]]]
+        The under pruning weight dimensions, which metric size should equal to the under pruning weight size on these dimensions.
+        None means one-to-one correspondence between pruned dimensions and metric, which equal to set `dim` as all under pruning weight dimensions.
+        The mask will expand to the weight size depend on `dim`.
+
+        Example:
+
+        The under pruning weight has size (2, 3, 4), and `dim=1` means the under pruning weight dimension is 1.
+        Then the metric should have a size (3,), i.e., `metric=[0.9, 0.1, 0.8]`. (metirc is corresponded to dim shape)
+        Assuming by some kind of `SparsityAllocator` get the mask on weight dimension 1 `mask=[1, 0, 1]`,
+        then the dimension mask will expand to the final mask `[[[1, 1, 1, 1], [0, 0, 0, 0], [1, 1, 1, 1]], [[1, 1, 1, 1], [0, 0, 0, 0], [1, 1, 1, 1]]]`.
+    block_sparse_size : Optional[Union[int, List[int]]]
+        This used to describe the block size a metric value represented. By default, None means the block size is ones(len(dim)).
+        Make sure len(dim) == len(block_sparse_size), and the block_sparse_size dimension position is corresponding to dim.
+
+        Example:
+
+        The metric size is (12,), and block_sparse_size=[64], then the mask will expand to (768,) at first before expand with `dim`.
+    """
+
+    def __init__(self, model: Module, config_list: List[Dict], dim: Optional[Union[int, List[int]]] = None,
+                 block_sparse_size: Optional[Union[int, List[int]]] = None):
+        super().__init__(model, config_list)
+        self.metrics_calculator = BlockMetricsCaculator(dim=dim, block_sparse_size=block_sparse_size)
+        self.sparsity_allocator = BlockSparsityAllocator(self, dim=dim, block_sparse_size=block_sparse_size)
+
+    def _validate_config_before_canonical(self, model: Module, config_list: List[Dict]):
+        schema_list = [deepcopy(NORMAL_SCHEMA), deepcopy(EXCLUDE_SCHEMA), deepcopy(INTERNAL_SCHEMA)]
+        schema = CompressorSchema(schema_list, model, _logger)
+        schema.validate(config_list)
+
+    def reset_tools(self):
+        if self.data_collector is None:
+            self.data_collector = WeightDataCollector(self)     # 拿到的是各层的weights
         else:
             self.data_collector.reset()
         if self.metrics_calculator is None:

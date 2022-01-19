@@ -324,7 +324,7 @@ class SparsityAllocator:
             Example:
 
             The under pruning weight has size (2, 3, 4), and `dim=1` means the under pruning weight dimension is 1.
-            Then the metric should have a size (3,), i.e., `metric=[0.9, 0.1, 0.8]`.
+            Then the metric should have a size (3,), i.e., `metric=[0.9, 0.1, 0.8]`. (metirc is corresponded to dim shape)
             Assuming by some kind of `SparsityAllocator` get the mask on weight dimension 1 `mask=[1, 0, 1]`,
             then the dimension mask will expand to the final mask `[[[1, 1, 1, 1], [0, 0, 0, 0], [1, 1, 1, 1]], [[1, 1, 1, 1], [0, 0, 0, 0], [1, 1, 1, 1]]]`.
         block_sparse_size

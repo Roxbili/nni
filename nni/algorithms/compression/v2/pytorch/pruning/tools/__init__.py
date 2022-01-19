@@ -16,12 +16,14 @@ from .metrics_calculator import (
     MultiDataNormMetricsCalculator,
     DistMetricsCalculator,
     APoZRankMetricsCalculator,
-    MeanRankMetricsCalculator
+    MeanRankMetricsCalculator,
+    BlockMetricsCaculator
 )
 from .sparsity_allocator import (
     NormalSparsityAllocator,
     GlobalSparsityAllocator,
-    Conv2dDependencyAwareAllocator
+    Conv2dDependencyAwareAllocator,
+    BlockSparsityAllocator
 )
 from .task_generator import (
     AGPTaskGenerator,

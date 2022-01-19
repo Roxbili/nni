@@ -16,7 +16,8 @@ from nni.algorithms.compression.v2.pytorch.pruning import (
     ActivationMeanRankPruner,
     TaylorFOWeightPruner,
     ADMMPruner,
-    MovementPruner
+    MovementPruner,
+    BlockPruner
 )
 from nni.algorithms.compression.v2.pytorch.utils import compute_sparsity_mask2compact, trace_parameters
 
@@ -166,6 +167,17 @@ class PrunerTestCase(unittest.TestCase):
         sparsity_list = compute_sparsity_mask2compact(pruned_model, masks, config_list)
         assert 0.78 < sparsity_list[0]['total_sparsity'] < 0.82
 
+    def test_level_pruner(self):
+        model = TorchModel()
+        config_list = [{'op_types': ['Linear'], 'sparsity': 0.8}]
+        pruner = BlockPruner(model=model, config_list=config_list, dim=[0,1], block_sparse_size=[1,4])
+        pruned_model, masks = pruner.compress()
+        pruner._unwrap_model()
+        sparsity_list = compute_sparsity_mask2compact(pruned_model, masks, config_list)
+        assert 0.78 < sparsity_list[0]['total_sparsity'] < 0.82
+
 
 if __name__ == '__main__':
     unittest.main()
+    # test_case = PrunerTestCase()
+    # test_case.test_level_pruner()

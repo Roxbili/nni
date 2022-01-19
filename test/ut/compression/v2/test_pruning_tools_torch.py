@@ -21,7 +21,8 @@ from nni.algorithms.compression.v2.pytorch.pruning.tools import (
 )
 from nni.algorithms.compression.v2.pytorch.pruning.tools import (
     NormalSparsityAllocator,
-    GlobalSparsityAllocator
+    GlobalSparsityAllocator,
+    BlockSparsityAllocator
 )
 from nni.algorithms.compression.v2.pytorch.pruning.tools.base import HookCollectorInfo
 from nni.algorithms.compression.v2.pytorch.utils import get_module_by_name, trace_parameters
@@ -200,6 +201,17 @@ class PruningToolsTestCase(unittest.TestCase):
             total_masked_elements += t['weight'].sum().item()
         assert total_masked_elements / total_elements == 0.2
 
+        # Test BlockSparsityAllocator
+        model = TorchModel()
+        config_list = [{'op_types': ['Conv2d'], 'total_sparsity': 0.8}]
+        pruner = Pruner(model, config_list)
+        metrics = {
+            'conv1': torch.rand(5, 1, 5, 5),
+            'conv2': torch.rand(10, 5, 5, 5)
+        }
+        sparsity_allocator = BlockSparsityAllocator(pruner)
+        masks = sparsity_allocator.generate_sparsity(metrics)
+        assert all(v['weight'].sum() / v['weight'].numel() == 0.2 for k, v in masks.items())
 
 if __name__ == '__main__':
     unittest.main()
