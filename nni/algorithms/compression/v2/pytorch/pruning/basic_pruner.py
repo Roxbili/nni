@@ -217,6 +217,33 @@ class BlockPruner(BasicPruner):
         if self.sparsity_allocator is None:
             self.sparsity_allocator = NormalSparsityAllocator(self)
 
+    # NOTE: need refactor dim with supporting list
+    def show_pruned_weights(self, dim: int = -1):
+        """
+        Log the simulated prune sparsity.
+
+        Parameters
+        ----------
+        dim
+            The pruned dim.
+        """
+        for _, wrapper in self.get_modules_wrapper().items():
+            weight_mask = wrapper.weight_mask
+            mask_size = weight_mask.size()
+
+            if dim == -1:
+                index = torch.nonzero(weight_mask.abs() != 0, as_tuple=False).tolist()
+                _logger.info(f'simulated prune {wrapper.name} remain/total: {len(index)}/{weight_mask.numel()}')
+            else:
+                if len(mask_size) == 1:
+                    index = torch.nonzero(weight_mask.abs() != 0, as_tuple=False).tolist()
+                else:
+                    sum_idx = list(range(len(mask_size)))
+                    sum_idx.remove(dim)
+                    print(sum_idx)
+                    index = torch.nonzero(weight_mask.abs().sum(sum_idx) != 0, as_tuple=False).tolist()
+                _logger.info(f'simulated prune {wrapper.name} remain/total: {len(index)}/{weight_mask.size(dim)}')
+
 
 class NormPruner(BasicPruner):
     """
