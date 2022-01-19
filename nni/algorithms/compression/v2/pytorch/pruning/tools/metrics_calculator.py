@@ -134,8 +134,6 @@ class BlockMetricsCaculator(MetricsCalculator):
 
             # avg_pool in each metric block
             if self.block_sparse_size is not None:
-                # print(tensor.size(), self.dim, metrics[name].shape)
-                metrics[name].unsqueeze(0)
                 metrics[name] = F.avg_pool2d(metrics[name].unsqueeze(0), kernel_size=self.block_sparse_size,
                                             ceil_mode=True, count_include_pad=False).squeeze(0)
         return metrics

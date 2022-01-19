@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple, Union
 import numpy as np
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 
 from nni.algorithms.compression.v2.pytorch.base import Pruner
 from nni.compression.pytorch.utils.shape_dependency import ChannelDependency, GroupDependency
@@ -96,15 +97,71 @@ class BlockSparsityAllocator(SparsityAllocator):
 
         if self.block_sparse_size is not None:
             # operation like pooling
-            lower_case_letters = 'abcdefghijklmnopqrstuvwxyz'
-            ein_expression = ''
-            for i, step in enumerate(self.block_sparse_size):
-                mask = mask.unfold(i, step, step)
-                ein_expression += lower_case_letters[i]
-            ein_expression = '...{},{}'.format(ein_expression, ein_expression)
-            mask = torch.einsum(ein_expression, mask, torch.ones(self.block_sparse_size).to(mask.device))
+            # lower_case_letters = 'abcdefghijklmnopqrstuvwxyz'
+            # ein_expression = ''
+            # for i, step in enumerate(self.block_sparse_size):
+            #     mask = mask.unfold(i, step, step)
+            #     ein_expression += lower_case_letters[i]
+            # ein_expression = '...{},{}'.format(ein_expression, ein_expression)
+            # mask = torch.einsum(ein_expression, mask, torch.ones(self.block_sparse_size).to(mask.device))
+
+            # reamain smaller block
+            mask = F.avg_pool2d(mask.unsqueeze(0), kernel_size=self.block_sparse_size,
+                                        ceil_mode=True, count_include_pad=False).squeeze(0)
 
         return (mask != 0).type_as(mask)
+
+    def _expand_mask(self, name: str, mask: Tensor) -> Dict[str, Tensor]:
+        """
+        Parameters
+        ----------
+        name
+            The masked module name.
+        mask
+            The reduced mask with `self.dim` and `self.block_sparse_size`.
+
+        Returns
+        -------
+        Dict[str, Tensor]
+            The key is `weight` or `bias`, value is the final mask.
+        """
+        weight_mask = mask.clone()
+
+        if self.block_sparse_size is not None:
+            # expend mask with block_sparse_size
+            expand_size = list(weight_mask.size())
+            reshape_size = list(weight_mask.size())
+            for i, block_width in reversed(list(enumerate(self.block_sparse_size))):
+                weight_mask = weight_mask.unsqueeze(i + 1)
+                expand_size.insert(i + 1, block_width)
+                reshape_size[i] *= block_width
+            weight_mask = weight_mask.expand(expand_size).reshape(reshape_size)
+
+        wrapper = self.pruner.get_modules_wrapper()[name]
+        weight_size = wrapper.module.weight.data.size()
+
+        # resize as weight, it will drop out tedious mask
+        weight_mask = weight_mask.resize_(weight_size)
+
+        if self.dim is None:
+            assert weight_mask.size() == weight_size
+            expand_mask = {'weight': weight_mask}
+        else:
+            # expand mask to weight size with dim
+            assert len(weight_mask.size()) == len(self.dim)
+            assert all(weight_size[j] == weight_mask.size(i) for i, j in enumerate(self.dim))
+
+            idxs = list(range(len(weight_size)))
+            [idxs.pop(i) for i in reversed(self.dim)]
+            for i in idxs:
+                weight_mask = weight_mask.unsqueeze(i)
+            expand_mask = {'weight': weight_mask.expand(weight_size).clone()}
+            # NOTE: assume we only mask output, so the mask and bias have a one-to-one correspondence.
+            # If we support more kind of masks, this place need refactor.
+            if wrapper.bias_mask is not None and weight_mask.size() == wrapper.bias_mask.size():
+                expand_mask['bias'] = weight_mask.clone()
+
+        return expand_mask
 
 
 class GlobalSparsityAllocator(SparsityAllocator):

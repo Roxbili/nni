@@ -170,7 +170,7 @@ class PrunerTestCase(unittest.TestCase):
     def test_level_pruner(self):
         model = TorchModel()
         config_list = [{'op_types': ['Linear'], 'sparsity': 0.8}]
-        pruner = BlockPruner(model=model, config_list=config_list, dim=[0,1], block_sparse_size=[1,4])
+        pruner = BlockPruner(model=model, config_list=config_list, dim=[0,1], block_sparse_size=[4,1])
         pruned_model, masks = pruner.compress()
         pruner._unwrap_model()
         sparsity_list = compute_sparsity_mask2compact(pruned_model, masks, config_list)
