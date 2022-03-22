@@ -38,6 +38,7 @@ from .tools import (
 from .tools import (
     SparsityAllocator,
     NormalSparsityAllocator,
+    BankSparsityAllocator,
     GlobalSparsityAllocator,
     Conv2dDependencyAwareAllocator,
     BlockSparsityAllocator
@@ -141,9 +142,55 @@ class LevelPruner(BasicPruner):
             - op_names : Operation names to be pruned.
             - op_partial_names: Operation partial names to be pruned, will be autocompleted by NNI.
             - exclude : Set True then the layers setting by op_types and op_names will be excluded from pruning.
+    mode : str
+        'normal' or 'balance'.
+        If setting 'normal' mode, target tensor will be pruned in the way of finegrained pruning.
+        If setting 'balance' mode, a specal sparse pattern will chosen by pruner. Take linear
+        operation an example, weight tensor will be split into sub block whose shape is aligned to
+        balance_gran. Then finegrained pruning will be applied internal of sub block. This sparsity
+        pattern have more chance to achieve better trade-off between model performance and hardware
+        acceleration. Please refer to releated paper for further information 'Balanced Sparsity for 
+        Efficient DNN Inference on GPU'(https://arxiv.org/pdf/1811.00206.pdf).
+    balance_gran : list
+        Balance_gran is for special sparse pattern balanced sparsity, Default value is None which means pruning 
+        without awaring balance, namely normal finegrained pruning.
+        If passing list of int, LevelPruner will prune the model in the granularity of multi-dimension block.
+        Attention that the length of balance_gran should be smaller than tensor dimension.
+        For instance, in Linear operation, length of balance_gran should be equal or smaller than two since
+        dimension of pruning weight is two. If setting balbance_gran = [5, 5], sparsity = 0.6, pruner will 
+        divide pruning parameters into multiple block with tile size (5,5) and each bank has 5 * 5 values 
+        and 10 values would be kept after pruning. Finegrained pruning is applied in the granularity of block 
+        so that each block will kept same number of non-zero values after pruning. Such pruning method "balance" 
+        the non-zero value in tensor which create chance for better hardware acceleration.
+
+        Note: If length of given balance_gran smaller than length of pruning tensor shape, it will be made up
+              in right align(such as example 1).
+
+            example 1:
+                operation: Linear
+                pruning tensor: weight
+                pruning tensor shape: [32, 32]
+                sparsity: 50%
+                balance_gran: [4]
+
+                pruning result: Weight tensor whose shape is [32, 32] will be split into 256 [1, 4] sub blocks.
+                                Each sub block will be pruned 2 values.
+
+            example 2:
+                operation: Linear
+                pruning tensor: weight
+                pruning tensor shape: [64, 64]
+                sparsity: 25%
+                balance_gran: [32, 32]
+
+                pruning result: Weight tensor whose shape is [64, 64] will be split into 4 [32, 32] sub blocks.
+                                Each sub block will be pruned 256 values.
+                
     """
 
-    def __init__(self, model: Module, config_list: List[Dict]):
+    def __init__(self, model: Module, config_list: List[Dict], mode: str = "normal", balance_gran: Optional[List] = None):
+        self.mode = mode
+        self.balance_gran = balance_gran
         super().__init__(model, config_list)
 
     def _validate_config_before_canonical(self, model: Module, config_list: List[Dict]):
@@ -159,8 +206,13 @@ class LevelPruner(BasicPruner):
         if self.metrics_calculator is None:
             self.metrics_calculator = NormMetricsCalculator()
         if self.sparsity_allocator is None:
-            self.sparsity_allocator = NormalSparsityAllocator(self)
-
+            if self.mode == "normal":
+                self.sparsity_allocator = NormalSparsityAllocator(self)
+            elif self.mode == "balance":
+                assert self.balance_gran is not None, 'balance_gran should be passed as param in balance mode'
+                self.sparsity_allocator = BankSparsityAllocator(self, self.balance_gran)
+            else:
+                raise NotImplementedError('Only support mode `normal` and `balance`')
 
 class BlockPruner(BasicPruner):
     """
@@ -466,8 +518,8 @@ class SlimPruner(BasicPruner):
                     optimizer.step()
                 model.train(mode=training)
     traced_optimizer : nni.common.serializer.Traceable(torch.optim.Optimizer)
-        The traced optimizer instance which the optimizer class is wrapped by nni.algorithms.compression.v2.pytorch.utils.trace_parameters.
-        E.g. traced_optimizer = nni.algorithms.compression.v2.pytorch.utils.trace_parameters(torch.nn.Adam)(model.parameters()).
+        The traced optimizer instance which the optimizer class is wrapped by nni.trace.
+        E.g. traced_optimizer = nni.trace(torch.nn.Adam)(model.parameters()).
     criterion : Callable[[Tensor, Tensor], Tensor]
         The criterion function used in trainer. Take model output and target value as input, and return the loss.
     training_epochs : int
@@ -571,8 +623,8 @@ class ActivationPruner(BasicPruner):
                     optimizer.step()
                 model.train(mode=training)
     traced_optimizer : nni.common.serializer.Traceable(torch.optim.Optimizer)
-        The traced optimizer instance which the optimizer class is wrapped by nni.algorithms.compression.v2.pytorch.utils.trace_parameters.
-        E.g. traced_optimizer = nni.algorithms.compression.v2.pytorch.utils.trace_parameters(torch.nn.Adam)(model.parameters()).
+        The traced optimizer instance which the optimizer class is wrapped by nni.trace.
+        E.g. traced_optimizer = nni.trace(torch.nn.Adam)(model.parameters()).
     criterion : Callable[[Tensor, Tensor], Tensor]
         The criterion function used in trainer. Take model output and target value as input, and return the loss.
     training_batches
@@ -715,8 +767,8 @@ class TaylorFOWeightPruner(BasicPruner):
                     optimizer.step()
                 model.train(mode=training)
     traced_optimizer : nni.common.serializer.Traceable(torch.optim.Optimizer)
-        The traced optimizer instance which the optimizer class is wrapped by nni.algorithms.compression.v2.pytorch.utils.trace_parameters.
-        E.g. traced_optimizer = nni.algorithms.compression.v2.pytorch.utils.trace_parameters(torch.nn.Adam)(model.parameters()).
+        The traced optimizer instance which the optimizer class is wrapped by nni.trace.
+        E.g. traced_optimizer = nni.trace(torch.nn.Adam)(model.parameters()).
     criterion : Callable[[Tensor, Tensor], Tensor]
         The criterion function used in trainer. Take model output and target value as input, and return the loss.
     training_batches : int
@@ -848,8 +900,8 @@ class ADMMPruner(BasicPruner):
                     optimizer.step()
                 model.train(mode=training)
     traced_optimizer : nni.common.serializer.Traceable(torch.optim.Optimizer)
-        The traced optimizer instance which the optimizer class is wrapped by nni.algorithms.compression.v2.pytorch.utils.trace_parameters.
-        E.g. traced_optimizer = nni.algorithms.compression.v2.pytorch.utils.trace_parameters(torch.nn.Adam)(model.parameters()).
+        The traced optimizer instance which the optimizer class is wrapped by nni.trace.
+        E.g. traced_optimizer = nni.trace(torch.nn.Adam)(model.parameters()).
     criterion : Callable[[Tensor, Tensor], Tensor]
         The criterion function used in trainer. Take model output and target value as input, and return the loss.
     iterations : int
